@@ -1,0 +1,213 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Tune a help-center RAG pipeline and evaluate retrieval quality.">
+  <title>Help Center Retrieval Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'explorer/assignment.css' %}">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="{% url 'explorer:assignment' %}">
+        <span class="brand-mark">A</span>
+        <span>Acme Help <small>Retrieval lab</small></span>
+      </a>
+      <nav>
+        <span>{{ document_count }} help documents</span>
+        <a href="{% url 'explorer:index' %}">Resume chunk lab</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <span class="kicker">RAG assignment · retrieval evaluation</span>
+          <h1>Tune the evidence<br>before the model answers.</h1>
+        </div>
+        <div class="intro-copy">
+          <p>
+            Adjust chunk size, overlap, and Top K. The same customer question can
+            retrieve very different evidence depending on those choices.
+          </p>
+          <div class="pipeline">
+            <span>Question</span><i></i><span>Embed</span><i></i>
+            <span>Retrieve K</span><i></i><span>Local LLM</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="workspace">
+        <aside class="experiment-panel">
+          <form id="experiment-form">
+            {% csrf_token %}
+            <section class="control-section">
+              <div class="section-number">01</div>
+              <div class="section-content">
+                <h2>Choose a customer question</h2>
+                <p>Each question has one gold-standard help document.</p>
+                <div class="question-options">
+                  {% for key, item in questions.items %}
+                    <label class="question-option">
+                      <input
+                        type="radio"
+                        name="question_key"
+                        value="{{ key }}"
+                        {% if forloop.first %}checked{% endif %}
+                      >
+                      <span class="radio-ui"></span>
+                      <span class="question-copy">
+                        <strong>{{ item.label }}</strong>
+                        <span>“{{ item.question }}”</span>
+                        <small>{{ item.intent }}</small>
+                      </span>
+                    </label>
+                  {% endfor %}
+                </div>
+              </div>
+            </section>
+
+            <section class="control-section">
+              <div class="section-number">02</div>
+              <div class="section-content">
+                <h2>Tune retrieval</h2>
+                <p>All documents are re-chunked for every experiment.</p>
+
+                <label class="range-control">
+                  <span class="range-heading">
+                    <span>Chunk size</span>
+                    <output id="chunk-size-output">80 words</output>
+                  </span>
+                  <input id="chunk-size" type="range" min="20" max="180" step="10" value="80">
+                  <span class="range-ends"><span>20</span><span>180</span></span>
+                </label>
+
+                <label class="range-control">
+                  <span class="range-heading">
+                    <span>Overlap</span>
+                    <output id="overlap-output">20 words</output>
+                  </span>
+                  <input id="overlap" type="range" min="0" max="70" step="5" value="20">
+                  <span class="range-ends"><span>0</span><span id="overlap-max">70</span></span>
+                </label>
+
+                <label class="range-control">
+                  <span class="range-heading">
+                    <span>Top K</span>
+                    <output id="top-k-output">3 chunks</output>
+                  </span>
+                  <input id="top-k" type="range" min="1" max="10" step="1" value="3">
+                  <span class="range-ends"><span>1</span><span>10</span></span>
+                </label>
+              </div>
+            </section>
+
+            <button id="evaluate-button" class="evaluate-button" type="submit">
+              <span>Run retrieval + answer</span>
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+            </button>
+            <p id="form-status" class="form-status" role="status" aria-live="polite"></p>
+          </form>
+
+          <div class="model-note">
+            <span>Models</span>
+            <p><strong>Embeddings</strong> {{ embedding_model }}</p>
+            <p><strong>Local answer</strong> {{ llm_model }} via Ollama</p>
+          </div>
+        </aside>
+
+        <div class="results-column">
+          <section class="metrics-panel" aria-labelledby="metrics-heading">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">Retrieval scorecard</span>
+                <h2 id="metrics-heading">How good was the evidence?</h2>
+              </div>
+              <span id="stale-badge" class="stale-badge" hidden>Settings changed · rerun</span>
+            </div>
+
+            <div id="empty-state" class="empty-state">
+              <div class="empty-graphic">
+                <span>Q</span>
+                <i></i><i></i><i></i>
+              </div>
+              <h3>Run your first experiment</h3>
+              <p>The scorecard, generated answer, and retrieved chunks will appear here.</p>
+            </div>
+
+            <div id="evaluation-results" hidden>
+              <div class="metric-grid">
+                <article class="metric-card precision">
+                  <span>Precision@K</span>
+                  <strong id="precision-value">0%</strong>
+                  <p id="precision-detail">0 of 0 retrieved chunks were relevant.</p>
+                </article>
+                <article class="metric-card recall">
+                  <span>Recall@K</span>
+                  <strong id="recall-value">0%</strong>
+                  <p id="recall-detail">The gold document was not retrieved.</p>
+                </article>
+                <article class="metric-card compact">
+                  <span>Total chunks</span>
+                  <strong id="total-chunks-value">0</strong>
+                  <p>Created across all {{ document_count }} documents.</p>
+                </article>
+              </div>
+
+              <div class="metric-definitions">
+                <p>
+                  <strong>Precision@K</strong> = relevant chunks retrieved ÷ K.
+                  A chunk is relevant when it came from the gold document.
+                </p>
+                <p>
+                  <strong>Recall@K</strong> = gold documents represented ÷ all gold
+                  documents. There is one gold document for each question.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          <section id="answer-panel" class="answer-panel" hidden>
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">Local LLM response</span>
+                <h2>Answer built from retrieved context</h2>
+              </div>
+              <span id="llm-model-badge" class="model-badge"></span>
+            </div>
+            <div id="llm-answer" class="llm-answer"></div>
+          </section>
+
+          <section id="retrieval-panel" class="retrieval-panel" hidden>
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">Evidence inspection</span>
+                <h2>Top K retrieved chunks</h2>
+              </div>
+              <span id="gold-document" class="gold-document"></span>
+            </div>
+            <div id="retrieval-list" class="retrieval-list"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <span>Acme Help Retrieval Lab</span>
+      <p>Ground truth is attached to documents, while the retriever ranks chunks.</p>
+    </footer>
+  </div>
+
+  <script>
+    window.assignmentLab = {
+      evaluateUrl: "{% url 'explorer:evaluate_assignment' %}"
+    };
+  </script>
+  <script src="{% static 'explorer/assignment.js' %}"></script>
+</body>
+</html>

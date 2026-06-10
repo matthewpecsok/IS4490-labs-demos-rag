@@ -47,6 +47,29 @@ button {
   padding: 72px 0 62px;
 }
 
+.hero-nav {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+  margin-bottom: 34px;
+}
+
+.hero-nav a {
+  padding: 8px 11px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.hero-nav a:hover {
+  border-color: var(--green-dark);
+  color: var(--green-dark);
+}
+
 .eyebrow,
 .step-label {
   color: var(--green-dark);
@@ -61,7 +84,7 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 34px;
+  margin-bottom: 0;
 }
 
 .eyebrow span {
@@ -644,6 +667,15 @@ footer p {
 
   .hero {
     padding: 42px 0;
+  }
+
+  .hero-nav {
+    align-items: flex-start;
+  }
+
+  .hero-nav a {
+    max-width: 130px;
+    text-align: right;
   }
 
   h1 {
