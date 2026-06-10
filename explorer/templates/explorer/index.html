@@ -1,0 +1,141 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Explore how chunk size and overlap affect semantic retrieval.">
+  <title>Chunk Lab | RAG Explorer</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'explorer/styles.css' %}">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="eyebrow"><span></span> RAG learning playground</div>
+      <div class="hero-grid">
+        <div>
+          <h1>See what your<br><em>retriever</em> sees.</h1>
+          <p class="hero-copy">
+            Change how a resume is divided, then run a semantic search.
+            Watch the retrieval results shift as context boundaries move.
+          </p>
+        </div>
+        <aside class="model-card" aria-label="Embedding model details">
+          <span class="model-card-label">Embedding model</span>
+          <strong>all-MiniLM-L6-v2</strong>
+          <span>Hugging Face · 384 dimensions</span>
+          <div class="model-status"><i></i> Loaded on first search</div>
+        </aside>
+      </div>
+    </header>
+
+    <main>
+      <section class="control-panel" aria-labelledby="controls-heading">
+        <div class="section-heading">
+          <div>
+            <span class="step-label">01 · Configure</span>
+            <h2 id="controls-heading">Shape the context</h2>
+          </div>
+          <p>Each chunk is a word window. Overlap repeats words from the previous window.</p>
+        </div>
+
+        <div class="sliders">
+          <label class="slider-control">
+            <span class="slider-topline">
+              <span>Chunk size</span>
+              <output id="chunk-size-output" for="chunk-size">80 words</output>
+            </span>
+            <input id="chunk-size" type="range" min="20" max="200" step="10" value="80">
+            <span class="range-labels"><span>20</span><span>200 words</span></span>
+          </label>
+
+          <label class="slider-control">
+            <span class="slider-topline">
+              <span>Overlap</span>
+              <output id="overlap-output" for="overlap">20 words</output>
+            </span>
+            <input id="overlap" type="range" min="0" max="70" step="5" value="20">
+            <span class="range-labels"><span>0</span><span id="overlap-max-label">70 words</span></span>
+          </label>
+
+          <label class="slider-control">
+            <span class="slider-topline">
+              <span>Top K results</span>
+              <output id="top-k-output" for="top-k">3 chunks</output>
+            </span>
+            <input id="top-k" type="range" min="1" max="8" step="1" value="3">
+            <span class="range-labels"><span>1</span><span>8 chunks</span></span>
+          </label>
+        </div>
+
+        <div class="configuration-summary" aria-live="polite">
+          <div><span id="summary-chunks">0</span><small>chunks created</small></div>
+          <div><span id="summary-unique">0%</span><small>new words per chunk</small></div>
+          <p id="configuration-note">A balanced starting point for paragraph-sized ideas.</p>
+        </div>
+      </section>
+
+      <section class="search-section" aria-labelledby="search-heading">
+        <div class="section-heading">
+          <div>
+            <span class="step-label">02 · Search</span>
+            <h2 id="search-heading">Ask the resume</h2>
+          </div>
+          <p>Try concepts, not just exact keywords. Embeddings compare meaning rather than spelling.</p>
+        </div>
+
+        <form id="search-form" class="search-form">
+          {% csrf_token %}
+          <label class="sr-only" for="search-query">Semantic search query</label>
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
+          <input id="search-query" type="search" placeholder="Try “improving delivery operations”" autocomplete="off">
+          <button type="submit">
+            <span>Run search</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+        </form>
+        <div class="suggestions">
+          <span>Try:</span>
+          <button type="button" data-query="process automation">process automation</button>
+          <button type="button" data-query="healthcare scheduling">healthcare scheduling</button>
+          <button type="button" data-query="experience with AI">experience with AI</button>
+        </div>
+        <div id="search-message" class="search-message" role="status" aria-live="polite"></div>
+      </section>
+
+      <section class="chunks-section" aria-labelledby="chunks-heading">
+        <div class="section-heading chunks-heading-row">
+          <div>
+            <span class="step-label">03 · Inspect</span>
+            <h2 id="chunks-heading">Document chunks</h2>
+          </div>
+          <div class="legend">
+            <span><i class="legend-overlap"></i> Overlap</span>
+            <span><i class="legend-result"></i> Search result</span>
+          </div>
+        </div>
+
+        <div id="result-summary" class="result-summary" hidden></div>
+        <div id="chunks-grid" class="chunks-grid"></div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Chunk Lab</span>
+      <p>{{ resume_word_count }}-word fictional resume · Built for learning retrieval augmented generation</p>
+    </footer>
+  </div>
+
+  {{ resume|json_script:"resume-data" }}
+  <script>
+    window.chunkLab = {
+      searchUrl: "{% url 'explorer:search' %}",
+      modelName: "{{ model_name|escapejs }}"
+    };
+  </script>
+  <script src="{% static 'explorer/app.js' %}"></script>
+</body>
+</html>
