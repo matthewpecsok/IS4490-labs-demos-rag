@@ -1,0 +1,30 @@
+{
+  "add_numbers": {
+    "method": "POST",
+    "uri": "/add",
+    "description": "Return the sum of two integers.",
+    "request_body_schema": {
+      "type": "object",
+      "required": [
+        "a",
+        "b"
+      ],
+      "properties": {
+        "a": {
+          "type": "integer"
+        },
+        "b": {
+          "type": "integer"
+        }
+      }
+    },
+    "response_body_schema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "integer"
+        }
+      }
+    }
+  }
+}
