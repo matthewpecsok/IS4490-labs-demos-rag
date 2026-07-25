@@ -3,6 +3,7 @@
 __pycache__/
 *.py[cod]
 db.sqlite3
+vector_store_data/
 staticfiles/
 .pytest_cache/
 .coverage

@@ -1,0 +1,194 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Embed candidate resumes into a single-file vector database, then query it.">
+  <title>Candidate Vector DB Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'explorer/vectordb.css' %}">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="{% url 'explorer:vectordb' %}">
+        <span class="brand-mark">V</span>
+        <span>Candidate DB <small>Vector store lab</small></span>
+      </a>
+      <nav>
+        <span>{{ candidates|length }} resumes</span>
+        <a href="{% url 'explorer:index' %}">Chunk lab</a>
+        <a href="{% url 'explorer:assignment' %}">Help center lab</a>
+        <a href="{% url 'explorer:classify' %}">Screening lab</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <span class="kicker">RAG lab · persistent vector store</span>
+          <h1>Build a vector<br>database, then<br><em>query it</em>.</h1>
+        </div>
+        <div class="intro-copy">
+          <p>
+            Chunk and embed three candidate resumes for the {{ job_posting_title }}
+            role, write every chunk and its embedding into a single SQLite file, then
+            run semantic search against the file you just built.
+          </p>
+          <div class="pipeline">
+            <span>Chunk</span><i></i><span>Embed</span><i></i>
+            <span>Write .sqlite3</span><i></i><span>Query</span><i></i><span>Rank</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="candidate-roster" aria-label="Candidates in the vector database">
+        {% for candidate_id, candidate in candidates.items %}
+          <article class="candidate-roster-card">
+            <strong>{{ candidate.candidate_name }}</strong>
+            <span>{{ candidate.headline }}</span>
+            <small>{{ candidate.location }}</small>
+          </article>
+        {% endfor %}
+      </section>
+
+      <div class="workspace">
+        <aside class="build-panel">
+          <section class="control-section">
+            <div class="section-number">01</div>
+            <div class="section-content">
+              <h2>Chunk &amp; embed the resumes</h2>
+              <p>All {{ candidates|length }} resumes are re-chunked and re-embedded on every build.</p>
+
+              <label class="range-control">
+                <span class="range-heading">
+                  <span>Chunk size</span>
+                  <output id="chunk-size-output">80 words</output>
+                </span>
+                <input id="chunk-size" type="range" min="20" max="200" step="10" value="80">
+                <span class="range-ends"><span>20</span><span>200</span></span>
+              </label>
+
+              <label class="range-control">
+                <span class="range-heading">
+                  <span>Overlap</span>
+                  <output id="overlap-output">20 words</output>
+                </span>
+                <input id="overlap" type="range" min="0" max="70" step="5" value="20">
+                <span class="range-ends"><span>0</span><span id="overlap-max">70</span></span>
+              </label>
+
+              <button id="build-button" class="build-button" type="button">
+                <span>Build vector database</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v18m-8-8 8 8 8-8"/></svg>
+              </button>
+              <p id="build-status" class="form-status" role="status" aria-live="polite"></p>
+            </div>
+          </section>
+
+          <div id="db-status-card" class="db-status-card" hidden>
+            <span class="db-status-heading">
+              <i class="db-dot"></i> candidates.sqlite3
+            </span>
+            <dl>
+              <div><dt>Chunks stored</dt><dd id="db-chunk-count">0</dd></div>
+              <div><dt>Dimensions</dt><dd id="db-dimensions">0</dd></div>
+              <div><dt>File size</dt><dd id="db-file-size">0 KB</dd></div>
+              <div><dt>Built with</dt><dd id="db-build-settings">—</dd></div>
+            </dl>
+            <div id="db-per-candidate" class="db-per-candidate"></div>
+          </div>
+
+          <div class="model-note">
+            <span>Embedding model</span>
+            <p><strong>{{ model_name }}</strong></p>
+            <p>Every row in the SQLite file stores chunk text, resume metadata, and a
+              384-dimension embedding as raw bytes.</p>
+          </div>
+        </aside>
+
+        <div class="results-column">
+          <section class="query-panel" aria-labelledby="query-heading">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">02 · Query</span>
+                <h2 id="query-heading">Search the stored vectors</h2>
+              </div>
+              <span id="query-lock-badge" class="lock-badge">Build the database first</span>
+            </div>
+
+            <form id="query-form">
+              {% csrf_token %}
+              <label class="sr-only" for="query-text">Semantic query</label>
+              <textarea id="query-text" rows="3" placeholder="Try “led an engineering team through HIPAA compliance” or load the full job posting below."></textarea>
+
+              <label class="range-control top-k-control">
+                <span class="range-heading">
+                  <span>Top K</span>
+                  <output id="top-k-output">3 chunks</output>
+                </span>
+                <input id="top-k" type="range" min="1" max="10" step="1" value="3">
+                <span class="range-ends"><span>1</span><span>10</span></span>
+              </label>
+
+              <div class="suggestions">
+                <span>Try:</span>
+                <button type="button" data-query="Led engineering teams through HIPAA-regulated healthcare compliance">healthcare compliance leadership</button>
+                <button type="button" data-query="Managed a small software engineering team and built internal tools">software engineering management</button>
+                <button type="button" data-query="Coordinated vendors and staff for large hospitality events">hospitality event coordination</button>
+                <button type="button" id="use-job-posting">use full job posting as query</button>
+              </div>
+
+              <button id="search-button" class="build-button" type="submit" disabled>
+                <span>Search vector database</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
+              </button>
+              <p id="query-status" class="form-status" role="status" aria-live="polite"></p>
+            </form>
+          </section>
+
+          <section id="results-panel" class="results-panel" aria-labelledby="results-heading">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">03 · Rank</span>
+                <h2 id="results-heading">Top K retrieved chunks</h2>
+              </div>
+            </div>
+
+            <div id="empty-state" class="empty-state">
+              <div class="empty-graphic">
+                <span>DB</span>
+                <i></i><i></i><i></i>
+              </div>
+              <h3>Nothing retrieved yet</h3>
+              <p>Build the vector database, then run a query to see ranked chunks
+                across all three candidates.</p>
+            </div>
+
+            <div id="candidate-tally" class="candidate-tally" hidden></div>
+            <div id="results-list" class="results-list"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <span>Candidate Vector DB Lab</span>
+      <p>The embeddings live in one SQLite file on disk between requests — nothing is recomputed until you rebuild.</p>
+    </footer>
+  </div>
+
+  {{ job_posting|json_script:"job-posting-data" }}
+  {{ index_status|json_script:"index-status-data" }}
+  <script>
+    window.vectorDbLab = {
+      buildUrl: "{% url 'explorer:vectordb_build' %}",
+      searchUrl: "{% url 'explorer:vectordb_search' %}"
+    };
+  </script>
+  <script src="{% static 'explorer/vectordb.js' %}"></script>
+</body>
+</html>

@@ -55,6 +55,12 @@ button {
   margin-bottom: 34px;
 }
 
+.hero-nav-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .hero-nav a {
   padding: 8px 11px;
   border: 1px solid var(--line);

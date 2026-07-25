@@ -1,0 +1,207 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Classify each resume with retrieval-grounded Gemini calls, store a boolean, then query the database.">
+  <title>Resume Screening Pipeline</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'explorer/classify.css' %}">
+</head>
+<body>
+  <div class="app-shell">
+    {% csrf_token %}
+    <header class="topbar">
+      <a class="brand" href="{% url 'explorer:classify' %}">
+        <span class="brand-mark">S</span>
+        <span>Screening <small>Extract, store, query</small></span>
+      </a>
+      <nav>
+        <a href="{% url 'explorer:index' %}">Chunk lab</a>
+        <a href="{% url 'explorer:assignment' %}">Help center lab</a>
+        <a href="{% url 'explorer:vectordb' %}">Vector DB lab</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <span class="kicker">RAG lab · structured extraction at scale</span>
+          <h1>Semantic search<br>doesn't scale to<br><em>50,000 resumes</em>.</h1>
+        </div>
+        <div class="intro-copy">
+          <p>
+            One semantic search can't reliably rank every relevant document out of
+            tens of thousands. Instead, classify each resume once: retrieve the
+            most relevant chunks <strong>within that single resume</strong>, ask
+            Gemini a yes/no qualification question grounded in that evidence, and
+            store the boolean. Answering "who qualifies?" afterward is a plain
+            database query, not another semantic search.
+          </p>
+          <div class="pipeline">
+            <span>Per resume</span><i></i><span>Retrieve chunks</span><i></i>
+            <span>Gemini classify</span><i></i><span>Store boolean</span><i></i>
+            <span>SQL query</span>
+          </div>
+        </div>
+      </section>
+
+      {% if not gemini_configured %}
+        <div class="gemini-banner">
+          <strong>Gemini isn't configured yet.</strong>
+          Set <code>GOOGLE_API_KEY</code> (or <code>GEMINI_API_KEY</code>) in your
+          environment and restart the server to enable live classification. Retrieval
+          and storage still run below; classification will report "unavailable"
+          until a key is set.
+        </div>
+      {% endif %}
+
+      <div class="workspace">
+        <aside class="build-panel">
+          <section class="control-section">
+            <div class="section-number">01</div>
+            <div class="section-content">
+              <h2>Choose a qualification question</h2>
+              <p>Each question mirrors a requirement from the CTO job posting.</p>
+              <div class="question-options">
+                {% for key, item in questions.items %}
+                  <label class="question-option">
+                    <input type="radio" name="question_key" value="{{ key }}" {% if forloop.first %}checked{% endif %}>
+                    <span class="radio-ui"></span>
+                    <span class="question-copy">
+                      <strong>{{ item.label }}</strong>
+                      <span>{{ item.question }}</span>
+                      <small>Job posting: “{{ item.job_requirement }}”</small>
+                    </span>
+                  </label>
+                {% endfor %}
+                <label class="question-option custom-option">
+                  <input type="radio" name="question_key" value="custom">
+                  <span class="radio-ui"></span>
+                  <span class="question-copy">
+                    <strong>Custom question</strong>
+                    <textarea id="custom-question" rows="2" placeholder="Type your own yes/no question…"></textarea>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </section>
+
+          <section class="control-section">
+            <div class="section-number">02</div>
+            <div class="section-content">
+              <h2>Configure retrieval</h2>
+              <p>Chunks are retrieved from one resume at a time, never across resumes.</p>
+
+              <label class="range-control">
+                <span class="range-heading">
+                  <span>Chunk size</span>
+                  <output id="chunk-size-output">100 words</output>
+                </span>
+                <input id="chunk-size" type="range" min="20" max="200" step="10" value="100">
+                <span class="range-ends"><span>20</span><span>200</span></span>
+              </label>
+
+              <label class="range-control">
+                <span class="range-heading">
+                  <span>Overlap</span>
+                  <output id="overlap-output">20 words</output>
+                </span>
+                <input id="overlap" type="range" min="0" max="70" step="5" value="20">
+                <span class="range-ends"><span>0</span><span id="overlap-max">70</span></span>
+              </label>
+
+              <label class="range-control">
+                <span class="range-heading">
+                  <span>Top K per resume</span>
+                  <output id="top-k-output">4 chunks</output>
+                </span>
+                <input id="top-k" type="range" min="1" max="10" step="1" value="4">
+                <span class="range-ends"><span>1</span><span>10</span></span>
+              </label>
+            </div>
+          </section>
+
+          <div class="model-note">
+            <span>Models</span>
+            <p><strong>Embeddings</strong> {{ model_name }}</p>
+            <p><strong>Classification</strong> {{ gemini_model }} via LangChain</p>
+          </div>
+        </aside>
+
+        <div class="results-column">
+          <section class="run-panel" aria-labelledby="run-heading">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">03 · Classify</span>
+                <h2 id="run-heading">Run the pipeline, one resume at a time</h2>
+              </div>
+              <button id="run-button" class="build-button" type="button">
+                <span>Classify all candidates</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+              </button>
+            </div>
+            <p id="run-status" class="form-status" role="status" aria-live="polite"></p>
+            <div id="candidate-rows" class="candidate-rows">
+              {% for candidate_id, candidate in candidates.items %}
+                <article class="candidate-row" data-candidate-id="{{ candidate_id }}">
+                  <div class="candidate-row-top">
+                    <span class="candidate-row-name">{{ candidate.candidate_name }}</span>
+                    <span class="candidate-row-status" data-role="status">Waiting</span>
+                  </div>
+                  <p class="candidate-row-evidence" data-role="evidence"></p>
+                  <div class="candidate-row-chunks" data-role="chunks" hidden></div>
+                </article>
+              {% endfor %}
+            </div>
+          </section>
+
+          <section class="query-panel" aria-labelledby="query-heading">
+            <div class="panel-heading">
+              <div>
+                <span class="panel-label">04 · Query</span>
+                <h2 id="query-heading">Ask the database, not the model</h2>
+              </div>
+            </div>
+            <p class="query-intro">
+              This step runs a plain <code>WHERE question_key = … AND answer = 1</code>
+              query against stored results. No chunking, no embeddings, no Gemini
+              calls — this is what scales to 50,000 resumes.
+            </p>
+
+            <div class="query-controls">
+              <select id="query-question">
+                {% for key, item in questions.items %}
+                  <option value="{{ key }}">{{ item.label }}</option>
+                {% endfor %}
+              </select>
+              <button id="query-button" class="build-button query-button" type="button">
+                <span>Query database</span>
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m21 21-4.35-4.35m2.35-5.65a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z"/></svg>
+              </button>
+            </div>
+            <p id="query-status" class="form-status" role="status" aria-live="polite"></p>
+            <div id="query-results" class="query-results"></div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <span>Resume Screening Pipeline</span>
+      <p>Classify once per resume, store a boolean, query with SQL — the pattern that scales past what one semantic search can rank.</p>
+    </footer>
+  </div>
+
+  <script>
+    window.classifyLab = {
+      runUrl: "{% url 'explorer:classify_candidate' %}",
+      queryUrl: "{% url 'explorer:query_classifications' %}"
+    };
+  </script>
+  <script src="{% static 'explorer/classify.js' %}"></script>
+</body>
+</html>

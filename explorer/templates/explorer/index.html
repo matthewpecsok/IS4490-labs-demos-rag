@@ -16,7 +16,11 @@
     <header class="hero">
       <div class="hero-nav">
         <div class="eyebrow"><span></span> RAG learning playground</div>
-        <a href="{% url 'explorer:assignment' %}">Open assignment lab →</a>
+        <div class="hero-nav-links">
+          <a href="{% url 'explorer:assignment' %}">Open assignment lab →</a>
+          <a href="{% url 'explorer:vectordb' %}">Open vector DB lab →</a>
+          <a href="{% url 'explorer:classify' %}">Open screening lab →</a>
+        </div>
       </div>
       <div class="hero-grid">
         <div>

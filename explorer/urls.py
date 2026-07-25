@@ -14,4 +14,10 @@ urlpatterns = [
         views.evaluate_assignment,
         name="evaluate_assignment",
     ),
+    path("vectordb/", views.vectordb, name="vectordb"),
+    path("vectordb/build/", views.build_vector_index, name="vectordb_build"),
+    path("vectordb/search/", views.vectordb_search, name="vectordb_search"),
+    path("classify/", views.classify, name="classify"),
+    path("classify/run/", views.classify_candidate, name="classify_candidate"),
+    path("classify/query/", views.query_classifications, name="query_classifications"),
 ]

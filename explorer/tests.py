@@ -1,11 +1,18 @@
 import json
+import os
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
+from . import gemini_classifier, vector_store
+from .candidate_data import CANDIDATE_DOCUMENTS, JOB_POSTING_TEXT
+from .classification_data import CLASSIFICATION_QUESTIONS
 from .help_center_data import ASSIGNMENT_QUESTIONS, HELP_CENTER_DOCUMENTS
+from .models import ResumeClassification, question_key_for
 from .resume_data import RESUME_TEXT
 from .services import (
     calculate_retrieval_metrics,
@@ -23,6 +30,14 @@ class FakeEmbeddingModel:
             "healthcare scheduling": [0.1, 0.9],
         }
         return np.array([vectors[text] for text in texts])
+
+
+class FakeVectorModel:
+    def __init__(self, vectors):
+        self.vectors = vectors
+
+    def encode(self, texts, **kwargs):
+        return np.array([self.vectors[text] for text in texts])
 
 
 class ChunkTextTests(SimpleTestCase):
@@ -240,3 +255,355 @@ class AssignmentViewTests(SimpleTestCase):
         )
         self.assertTrue(response.json()["llm"]["available"])
         mocked_generate.assert_called_once()
+
+
+class CandidateDataTests(SimpleTestCase):
+    def test_three_candidate_resumes_are_loaded(self):
+        self.assertEqual(len(CANDIDATE_DOCUMENTS), 3)
+        for document in CANDIDATE_DOCUMENTS.values():
+            self.assertTrue(document["content"])
+            self.assertTrue(document["candidate_name"])
+
+    def test_job_posting_is_loaded(self):
+        self.assertIn("Chief Technology Officer", JOB_POSTING_TEXT)
+
+
+class VectorStoreTests(SimpleTestCase):
+    DOCUMENTS = {
+        "cand-a": {
+            "title": "Candidate A",
+            "candidate_name": "Candidate A",
+            "headline": "Engineer",
+            "location": "Remote",
+            "content": "alpha beta gamma delta",
+        },
+        "cand-b": {
+            "title": "Candidate B",
+            "candidate_name": "Candidate B",
+            "headline": "Manager",
+            "location": "Remote",
+            "content": "epsilon zeta eta theta",
+        },
+    }
+    BUILD_MODEL = FakeVectorModel(
+        {
+            "alpha beta gamma delta": [1.0, 0.0],
+            "epsilon zeta eta theta": [0.0, 1.0],
+        }
+    )
+
+    def setUp(self):
+        self._tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tempdir.cleanup)
+        patcher = patch(
+            "explorer.vector_store.DB_PATH",
+            Path(self._tempdir.name) / "candidates.sqlite3",
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_status_is_none_before_a_build(self):
+        self.assertIsNone(vector_store.get_index_status())
+
+    def test_search_before_build_raises(self):
+        with self.assertRaises(LookupError):
+            vector_store.search_index("alpha", top_k=1)
+
+    def test_build_writes_one_chunk_per_document(self):
+        stats = vector_store.build_index(
+            self.DOCUMENTS, chunk_size=4, overlap=0, model=self.BUILD_MODEL
+        )
+
+        self.assertEqual(stats["chunk_count"], 2)
+        self.assertEqual(stats["document_count"], 2)
+        self.assertEqual(stats["dimensions"], 2)
+        self.assertTrue(Path(stats["file_path"]).exists())
+
+        status = vector_store.get_index_status()
+        self.assertEqual(status["chunk_count"], 2)
+        self.assertEqual(status["chunk_size"], 4)
+
+    def test_search_ranks_by_cosine_similarity(self):
+        vector_store.build_index(
+            self.DOCUMENTS, chunk_size=4, overlap=0, model=self.BUILD_MODEL
+        )
+
+        query_model = FakeVectorModel({"find alpha": [1.0, 0.0]})
+        results = vector_store.search_index("find alpha", top_k=1, model=query_model)
+
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["document_id"], "cand-a")
+        self.assertEqual(results[0]["candidate_name"], "Candidate A")
+        self.assertEqual(results[0]["rank"], 1)
+
+
+class VectorDbViewTests(SimpleTestCase):
+    def test_vectordb_page_renders_candidates(self):
+        response = self.client.get(reverse("explorer:vectordb"))
+
+        self.assertContains(response, "Candidate Vector DB Lab")
+        self.assertContains(response, "Dr. Elena Martinez")
+
+    def test_build_rejects_invalid_overlap(self):
+        response = self.client.post(
+            reverse("explorer:vectordb_build"),
+            data=json.dumps({"chunk_size": 40, "overlap": 40}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_search_rejects_empty_query(self):
+        response = self.client.post(
+            reverse("explorer:vectordb_search"),
+            data=json.dumps({"query": "  ", "top_k": 3}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("explorer.vector_store.search_index")
+    def test_search_returns_conflict_when_index_missing(self, mocked_search):
+        mocked_search.side_effect = LookupError("The vector database has not been built yet.")
+
+        response = self.client.post(
+            reverse("explorer:vectordb_search"),
+            data=json.dumps({"query": "engineering leadership", "top_k": 3}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 409)
+
+    @patch("explorer.vector_store.build_index")
+    def test_build_returns_stats_from_vector_store(self, mocked_build):
+        mocked_build.return_value = {
+            "chunk_size": 80,
+            "overlap": 20,
+            "model_name": "test-model",
+            "dimensions": 384,
+            "chunk_count": 12,
+            "document_count": 3,
+            "built_at": 0.0,
+            "file_path": "/tmp/candidates.sqlite3",
+            "file_size_bytes": 4096,
+            "chunks_per_document": [],
+        }
+
+        response = self.client.post(
+            reverse("explorer:vectordb_build"),
+            data=json.dumps({"chunk_size": 80, "overlap": 20}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["chunk_count"], 12)
+        mocked_build.assert_called_once_with(CANDIDATE_DOCUMENTS, 80, 20)
+
+
+class QuestionKeyTests(SimpleTestCase):
+    def test_rubric_key_passes_through(self):
+        self.assertEqual(question_key_for("healthcare_hipaa", "ignored"), "healthcare_hipaa")
+
+    def test_custom_key_is_stable_hash(self):
+        first = question_key_for("custom", "Has this candidate led a rebrand?")
+        second = question_key_for("custom", "  HAS THIS CANDIDATE LED A REBRAND?  ")
+
+        self.assertTrue(first.startswith("custom:"))
+        self.assertEqual(first, second)
+
+
+class GeminiClassifierTests(SimpleTestCase):
+    def test_no_chunks_returns_unavailable(self):
+        result = gemini_classifier.classify_chunks("Jordan Lee", "Has AI experience?", [])
+
+        self.assertFalse(result["available"])
+        self.assertIn("No resume chunks", result["message"])
+
+    def test_missing_api_key_degrades_gracefully(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GOOGLE_API_KEY", None)
+            os.environ.pop("GEMINI_API_KEY", None)
+            self.assertFalse(gemini_classifier.is_configured())
+
+            result = gemini_classifier.classify_chunks(
+                "Jordan Lee",
+                "Has AI experience?",
+                [{"rank": 1, "score": 0.5, "text": "Worked with AI."}],
+            )
+
+        self.assertFalse(result["available"])
+        self.assertIn("GOOGLE_API_KEY", result["message"])
+
+
+class ClassificationPipelineViewTests(TestCase):
+    def test_classify_page_renders_rubric_and_candidates(self):
+        response = self.client.get(reverse("explorer:classify"))
+
+        self.assertContains(response, "Resume Screening Pipeline")
+        self.assertContains(response, "Dr. Elena Martinez")
+        self.assertContains(response, CLASSIFICATION_QUESTIONS["healthcare_hipaa"]["label"])
+
+    def test_run_rejects_unknown_candidate(self):
+        response = self.client.post(
+            reverse("explorer:classify_candidate"),
+            data=json.dumps(
+                {
+                    "candidate_id": "not-a-real-candidate",
+                    "question_key": "healthcare_hipaa",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_run_rejects_custom_question_without_text(self):
+        response = self.client.post(
+            reverse("explorer:classify_candidate"),
+            data=json.dumps(
+                {
+                    "candidate_id": "elena-martinez",
+                    "question_key": "custom",
+                    "question_text": "",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
+    def test_run_stores_result_when_gemini_available(self, mocked_search, mocked_classify):
+        mocked_search.return_value = [
+            {
+                "id": 0,
+                "text": "Led HIPAA-regulated engineering teams.",
+                "start_word": 1,
+                "end_word": 6,
+                "word_count": 6,
+                "overlap_count": 0,
+                "rank": 1,
+                "score": 0.87,
+            }
+        ]
+        mocked_classify.return_value = {
+            "available": True,
+            "answer": True,
+            "evidence": "Led HIPAA-regulated engineering teams.",
+            "model": "gemini-test",
+            "message": "",
+        }
+
+        response = self.client.post(
+            reverse("explorer:classify_candidate"),
+            data=json.dumps(
+                {
+                    "candidate_id": "elena-martinez",
+                    "question_key": "healthcare_hipaa",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["classification"]["answer"])
+        self.assertIsNotNone(data["stored"])
+
+        record = ResumeClassification.objects.get(
+            candidate_id="elena-martinez", question_key="healthcare_hipaa"
+        )
+        self.assertTrue(record.answer)
+        self.assertEqual(record.candidate_name, "Dr. Elena Martinez")
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
+    def test_run_does_not_store_when_gemini_unavailable(self, mocked_search, mocked_classify):
+        mocked_search.return_value = []
+        mocked_classify.return_value = {
+            "available": False,
+            "answer": None,
+            "evidence": "",
+            "model": "gemini-test",
+            "message": "Gemini is not available.",
+        }
+
+        response = self.client.post(
+            reverse("explorer:classify_candidate"),
+            data=json.dumps(
+                {
+                    "candidate_id": "marcus-reed",
+                    "question_key": "cloud_infra",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["stored"])
+        self.assertFalse(
+            ResumeClassification.objects.filter(
+                candidate_id="marcus-reed", question_key="cloud_infra"
+            ).exists()
+        )
+
+    def test_query_rejects_unknown_question(self):
+        response = self.client.post(
+            reverse("explorer:query_classifications"),
+            data=json.dumps({"question_key": "not-a-real-question"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_query_returns_stored_matches_ordered_by_answer(self):
+        ResumeClassification.objects.create(
+            candidate_id="elena-martinez",
+            candidate_name="Dr. Elena Martinez",
+            question_key="healthcare_hipaa",
+            question_text=CLASSIFICATION_QUESTIONS["healthcare_hipaa"]["question"],
+            answer=True,
+            evidence="Led HIPAA-regulated systems.",
+            chunk_size=100,
+            overlap=20,
+            top_k=4,
+            model_name="gemini-test",
+        )
+        ResumeClassification.objects.create(
+            candidate_id="olivia-grant",
+            candidate_name="Olivia Grant",
+            question_key="healthcare_hipaa",
+            question_text=CLASSIFICATION_QUESTIONS["healthcare_hipaa"]["question"],
+            answer=False,
+            evidence="No healthcare experience found.",
+            chunk_size=100,
+            overlap=20,
+            top_k=4,
+            model_name="gemini-test",
+        )
+
+        response = self.client.post(
+            reverse("explorer:query_classifications"),
+            data=json.dumps({"question_key": "healthcare_hipaa"}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["total_classified"], 2)
+        self.assertEqual(data["matched_count"], 1)
+        self.assertEqual(data["results"][0]["candidate_id"], "elena-martinez")
+        self.assertTrue(data["results"][0]["answer"])
