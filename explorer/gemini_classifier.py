@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 import requests
 from pydantic import BaseModel, Field
@@ -74,9 +75,12 @@ def classify_chunks(candidate_name, question, chunks, timeout=60):
             "evidence": "",
             "model": GEMINI_MODEL,
             "message": "No resume chunks were retrieved for this question.",
+            "usage": None,
+            "latency_ms": 0,
         }
 
     api_key = _api_key()
+    started = time.perf_counter()
     try:
         if not api_key:
             raise RuntimeError("No API key in GOOGLE_API_KEY or GEMINI_API_KEY.")
@@ -105,9 +109,16 @@ def classify_chunks(candidate_name, question, chunks, timeout=60):
             timeout=timeout,
         )
         response.raise_for_status()
-        candidates = response.json()["candidates"]
-        text = candidates[0]["content"]["parts"][0]["text"]
+        payload = response.json()
+        text = payload["candidates"][0]["content"]["parts"][0]["text"]
         result = ResumeQualification.model_validate_json(text)
+        usage_metadata = payload.get("usageMetadata", {})
+        usage = {
+            "prompt_tokens": usage_metadata.get("promptTokenCount", 0),
+            "output_tokens": usage_metadata.get("candidatesTokenCount", 0),
+            "thinking_tokens": usage_metadata.get("thoughtsTokenCount", 0),
+            "total_tokens": usage_metadata.get("totalTokenCount", 0),
+        }
     except Exception as exc:
         logger.exception(
             "Gemini classification failed (is_configured=%s, model=%s)",
@@ -124,6 +135,8 @@ def classify_chunks(candidate_name, question, chunks, timeout=60):
                 "a key valid for the Vertex AI generateContent endpoint."
             ),
             "detail": str(exc),
+            "usage": None,
+            "latency_ms": round((time.perf_counter() - started) * 1000),
         }
 
     return {
@@ -132,4 +145,6 @@ def classify_chunks(candidate_name, question, chunks, timeout=60):
         "evidence": result.evidence,
         "model": GEMINI_MODEL,
         "message": "",
+        "usage": usage,
+        "latency_ms": round((time.perf_counter() - started) * 1000),
     }

@@ -11,6 +11,7 @@ from django.urls import reverse
 from . import gemini_classifier, vector_store
 from .candidate_data import CANDIDATE_DOCUMENTS, JOB_POSTING_TEXT
 from .classification_data import CLASSIFICATION_QUESTIONS
+from .ground_truth_data import GROUND_TRUTH
 from .help_center_data import ASSIGNMENT_QUESTIONS, HELP_CENTER_DOCUMENTS
 from .models import ResumeClassification, question_key_for
 from .resume_data import RESUME_TEXT
@@ -418,6 +419,7 @@ class GeminiClassifierTests(SimpleTestCase):
 
         self.assertFalse(result["available"])
         self.assertIn("No resume chunks", result["message"])
+        self.assertEqual(result["latency_ms"], 0)
 
     def test_missing_api_key_degrades_gracefully(self):
         with patch.dict(os.environ, {}, clear=False):
@@ -433,6 +435,48 @@ class GeminiClassifierTests(SimpleTestCase):
 
         self.assertFalse(result["available"])
         self.assertIn("GOOGLE_API_KEY", result["message"])
+        self.assertIsNone(result["usage"])
+        self.assertGreaterEqual(result["latency_ms"], 0)
+
+    @patch("explorer.gemini_classifier.requests.post")
+    def test_classify_chunks_returns_token_usage(self, mocked_post):
+        mocked_post.return_value.json.return_value = {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": '{"answer": true, "evidence": "Led AI projects."}'}
+                        ]
+                    }
+                }
+            ],
+            "usageMetadata": {
+                "promptTokenCount": 120,
+                "candidatesTokenCount": 15,
+                "thoughtsTokenCount": 40,
+                "totalTokenCount": 175,
+            },
+        }
+        mocked_post.return_value.raise_for_status.return_value = None
+
+        with patch.dict(os.environ, {"GOOGLE_API_KEY": "test-key"}):
+            result = gemini_classifier.classify_chunks(
+                "Jordan Lee",
+                "Has AI experience?",
+                [{"rank": 1, "score": 0.5, "text": "Worked with AI."}],
+            )
+
+        self.assertTrue(result["available"])
+        self.assertEqual(
+            result["usage"],
+            {
+                "prompt_tokens": 120,
+                "output_tokens": 15,
+                "thinking_tokens": 40,
+                "total_tokens": 175,
+            },
+        )
+        self.assertGreaterEqual(result["latency_ms"], 0)
 
 
 class ClassificationPipelineViewTests(TestCase):
@@ -528,6 +572,63 @@ class ClassificationPipelineViewTests(TestCase):
 
     @patch("explorer.views.gemini_classifier.classify_chunks")
     @patch("explorer.views.search_chunks")
+    def test_run_stores_token_usage(self, mocked_search, mocked_classify):
+        mocked_search.return_value = [
+            {
+                "id": 0,
+                "text": "Led HIPAA-regulated engineering teams.",
+                "start_word": 1,
+                "end_word": 6,
+                "word_count": 6,
+                "overlap_count": 0,
+                "rank": 1,
+                "score": 0.87,
+            }
+        ]
+        mocked_classify.return_value = {
+            "available": True,
+            "answer": True,
+            "evidence": "Led HIPAA-regulated engineering teams.",
+            "model": "gemini-test",
+            "message": "",
+            "usage": {
+                "prompt_tokens": 200,
+                "output_tokens": 30,
+                "thinking_tokens": 50,
+                "total_tokens": 280,
+            },
+            "latency_ms": 842,
+        }
+
+        response = self.client.post(
+            reverse("explorer:classify_candidate"),
+            data=json.dumps(
+                {
+                    "candidate_id": "elena-martinez",
+                    "question_key": "healthcare_hipaa",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["classification"]["usage"]["total_tokens"], 280)
+        self.assertEqual(response.json()["classification"]["latency_ms"], 842)
+
+        record = ResumeClassification.objects.get(
+            candidate_id="elena-martinez", question_key="healthcare_hipaa"
+        )
+        self.assertEqual(record.prompt_tokens, 200)
+        self.assertEqual(record.output_tokens, 30)
+        self.assertEqual(record.thinking_tokens, 50)
+        self.assertEqual(record.total_tokens, 280)
+        self.assertEqual(record.latency_ms, 842)
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
     def test_run_does_not_store_when_gemini_unavailable(self, mocked_search, mocked_classify):
         mocked_search.return_value = []
         mocked_classify.return_value = {
@@ -607,3 +708,225 @@ class ClassificationPipelineViewTests(TestCase):
         self.assertEqual(data["matched_count"], 1)
         self.assertEqual(data["results"][0]["candidate_id"], "elena-martinez")
         self.assertTrue(data["results"][0]["answer"])
+
+
+class GroundTruthDataTests(SimpleTestCase):
+    def test_every_candidate_and_question_has_a_label(self):
+        self.assertEqual(set(GROUND_TRUTH.keys()), set(CANDIDATE_DOCUMENTS.keys()))
+        for candidate_id, labels in GROUND_TRUTH.items():
+            self.assertEqual(
+                set(labels.keys()),
+                set(CLASSIFICATION_QUESTIONS.keys()),
+                f"{candidate_id} is missing or has extra rubric question labels",
+            )
+            for question_key, answer in labels.items():
+                self.assertIsInstance(
+                    answer,
+                    bool,
+                    f"{candidate_id}.{question_key} ground truth must be a bool",
+                )
+
+
+class ExperimentViewTests(TestCase):
+    def test_experiment_page_renders(self):
+        response = self.client.get(reverse("explorer:experiment"))
+
+        self.assertContains(response, "Configuration A")
+        self.assertContains(response, "Configuration B")
+        self.assertContains(response, "Dr. Elena Martinez")
+
+    def test_run_cell_rejects_unknown_candidate(self):
+        response = self.client.post(
+            reverse("explorer:experiment_run_cell"),
+            data=json.dumps(
+                {
+                    "candidate_id": "not-a-real-candidate",
+                    "question_key": "healthcare_hipaa",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    def test_run_cell_rejects_custom_question(self):
+        response = self.client.post(
+            reverse("explorer:experiment_run_cell"),
+            data=json.dumps(
+                {
+                    "candidate_id": "elena-martinez",
+                    "question_key": "custom",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
+    def test_run_cell_marks_correct_answer(self, mocked_search, mocked_classify):
+        mocked_search.return_value = [
+            {
+                "id": 0,
+                "text": "Healthcare analytics SaaS, HIPAA-regulated systems.",
+                "start_word": 1,
+                "end_word": 6,
+                "word_count": 6,
+                "overlap_count": 0,
+                "rank": 1,
+                "score": 0.9,
+            }
+        ]
+        mocked_classify.return_value = {
+            "available": True,
+            "answer": True,
+            "evidence": "Healthcare analytics SaaS, HIPAA-regulated systems.",
+            "model": "gemini-test",
+            "message": "",
+            "usage": {
+                "prompt_tokens": 100,
+                "output_tokens": 10,
+                "thinking_tokens": 20,
+                "total_tokens": 130,
+            },
+            "latency_ms": 500,
+        }
+
+        response = self.client.post(
+            reverse("explorer:experiment_run_cell"),
+            data=json.dumps(
+                {
+                    "candidate_id": "elena-martinez",
+                    "question_key": "healthcare_hipaa",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertTrue(data["expected"])
+        self.assertTrue(data["correct"])
+        self.assertEqual(data["classification"]["usage"]["total_tokens"], 130)
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
+    def test_run_cell_marks_incorrect_answer(self, mocked_search, mocked_classify):
+        mocked_search.return_value = []
+        mocked_classify.return_value = {
+            "available": True,
+            "answer": True,
+            "evidence": "Mentions a scheduling tool.",
+            "model": "gemini-test",
+            "message": "",
+            "usage": {
+                "prompt_tokens": 50,
+                "output_tokens": 5,
+                "thinking_tokens": 5,
+                "total_tokens": 60,
+            },
+            "latency_ms": 400,
+        }
+
+        # Ground truth says Marcus Reed has NOT held 10+ years of tech
+        # leadership, so a "yes" prediction here should be scored incorrect.
+        response = self.client.post(
+            reverse("explorer:experiment_run_cell"),
+            data=json.dumps(
+                {
+                    "candidate_id": "marcus-reed",
+                    "question_key": "leadership_10yr",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertFalse(data["expected"])
+        self.assertFalse(data["correct"])
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
+    def test_run_cell_never_writes_to_resume_classification(
+        self, mocked_search, mocked_classify
+    ):
+        mocked_search.return_value = []
+        mocked_classify.return_value = {
+            "available": True,
+            "answer": True,
+            "evidence": "",
+            "model": "gemini-test",
+            "message": "",
+            "usage": {
+                "prompt_tokens": 1,
+                "output_tokens": 1,
+                "thinking_tokens": 1,
+                "total_tokens": 3,
+            },
+            "latency_ms": 1,
+        }
+
+        self.client.post(
+            reverse("explorer:experiment_run_cell"),
+            data=json.dumps(
+                {
+                    "candidate_id": "elena-martinez",
+                    "question_key": "healthcare_hipaa",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(ResumeClassification.objects.count(), 0)
+
+    @patch("explorer.views.gemini_classifier.classify_chunks")
+    @patch("explorer.views.search_chunks")
+    def test_run_cell_reports_none_correct_when_unavailable(
+        self, mocked_search, mocked_classify
+    ):
+        mocked_search.return_value = []
+        mocked_classify.return_value = {
+            "available": False,
+            "answer": None,
+            "evidence": "",
+            "model": "gemini-test",
+            "message": "Gemini is not available.",
+            "usage": None,
+            "latency_ms": 0,
+        }
+
+        response = self.client.post(
+            reverse("explorer:experiment_run_cell"),
+            data=json.dumps(
+                {
+                    "candidate_id": "olivia-grant",
+                    "question_key": "cloud_infra",
+                    "chunk_size": 100,
+                    "overlap": 20,
+                    "top_k": 4,
+                }
+            ),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIsNone(data["correct"])
+        self.assertFalse(data["expected"])

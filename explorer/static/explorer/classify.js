@@ -14,7 +14,30 @@
 
   const runButton = document.getElementById("run-button");
   const runStatus = document.getElementById("run-status");
+  const runSummary = document.getElementById("run-summary");
   const candidateRows = document.querySelectorAll(".candidate-row");
+
+  let runTotals = { prompt: 0, output: 0, thinking: 0, total: 0, latencyMs: 0 };
+
+  function formatTokens(n) {
+    return n.toLocaleString();
+  }
+
+  function formatLatency(ms) {
+    return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+  }
+
+  function renderRunSummary() {
+    if (!runTotals.total && !runTotals.latencyMs) {
+      runSummary.hidden = true;
+      return;
+    }
+    runSummary.hidden = false;
+    runSummary.textContent =
+      `${formatTokens(runTotals.total)} tokens total this run (${formatTokens(runTotals.prompt)} prompt · ` +
+      `${formatTokens(runTotals.thinking)} thinking · ${formatTokens(runTotals.output)} output) · ` +
+      `${formatLatency(runTotals.latencyMs)} total latency`;
+  }
 
   const queryQuestionSelect = document.getElementById("query-question");
   const queryButton = document.getElementById("query-button");
@@ -59,6 +82,44 @@
     row.querySelector("[data-role='status']").textContent = label;
   }
 
+  function buildChunkDetail(chunk) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "candidate-row-chunk";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "chunk-toggle";
+    toggle.setAttribute("aria-expanded", "false");
+
+    const summary = document.createElement("span");
+    summary.className = "chunk-toggle-summary";
+    summary.textContent =
+      `#${chunk.rank} · ${chunk.score.toFixed(3)} similarity · words ` +
+      `${chunk.start_word}–${chunk.end_word}`;
+
+    const arrow = document.createElement("svg");
+    arrow.setAttribute("aria-hidden", "true");
+    arrow.setAttribute("viewBox", "0 0 24 24");
+    arrow.className = "chunk-toggle-arrow";
+    arrow.innerHTML = '<path d="m6 9 6 6 6-6"/>';
+
+    toggle.append(summary, arrow);
+
+    const text = document.createElement("p");
+    text.className = "chunk-toggle-text";
+    text.textContent = chunk.text;
+    text.hidden = true;
+
+    toggle.addEventListener("click", () => {
+      const isOpen = toggle.getAttribute("aria-expanded") === "true";
+      toggle.setAttribute("aria-expanded", String(!isOpen));
+      text.hidden = isOpen;
+    });
+
+    wrapper.append(toggle, text);
+    return wrapper;
+  }
+
   function renderRowChunks(row, chunks) {
     const container = row.querySelector("[data-role='chunks']");
     if (!chunks || !chunks.length) {
@@ -67,21 +128,29 @@
       return;
     }
     container.hidden = false;
-    container.replaceChildren(
-      ...chunks.map((chunk) => {
-        const div = document.createElement("div");
-        div.className = "candidate-row-chunk";
-        div.textContent =
-          `#${chunk.rank} · ${chunk.score.toFixed(3)} similarity · words ` +
-          `${chunk.start_word}–${chunk.end_word}`;
-        return div;
-      })
-    );
+    container.replaceChildren(...chunks.map(buildChunkDetail));
+  }
+
+  function renderRowUsage(row, usage, latencyMs) {
+    const el = row.querySelector("[data-role='usage']");
+    if (!usage) {
+      el.hidden = true;
+      el.textContent = "";
+      return;
+    }
+    el.hidden = false;
+    el.textContent =
+      `${formatTokens(usage.total_tokens)} tokens ` +
+      `(${formatTokens(usage.prompt_tokens)} prompt · ` +
+      `${formatTokens(usage.thinking_tokens)} thinking · ` +
+      `${formatTokens(usage.output_tokens)} output) · ` +
+      `${formatLatency(latencyMs)}`;
   }
 
   async function classifyOne(row, candidateId, question) {
     setRowState(row, "is-running", "Retrieving + classifying…");
     row.querySelector("[data-role='evidence']").textContent = "";
+    renderRowUsage(row, null, 0);
 
     const response = await fetch(window.classifyLab.runUrl, {
       method: "POST",
@@ -112,6 +181,16 @@
     setRowState(row, classification.answer ? "is-true" : "is-false", classification.answer ? "Yes" : "No");
     row.querySelector("[data-role='evidence']").textContent =
       `${classification.evidence} ${data.stored ? "· stored in database" : ""}`.trim();
+
+    if (classification.usage) {
+      renderRowUsage(row, classification.usage, classification.latency_ms);
+      runTotals.prompt += classification.usage.prompt_tokens;
+      runTotals.output += classification.usage.output_tokens;
+      runTotals.thinking += classification.usage.thinking_tokens;
+      runTotals.total += classification.usage.total_tokens;
+      runTotals.latencyMs += classification.latency_ms || 0;
+      renderRunSummary();
+    }
   }
 
   async function runPipeline() {
@@ -127,9 +206,13 @@
     buttonLabel.textContent = "Classifying…";
     runStatus.classList.remove("error");
 
+    runTotals = { prompt: 0, output: 0, thinking: 0, total: 0, latencyMs: 0 };
+    renderRunSummary();
+
     candidateRows.forEach((row) => {
       setRowState(row, null, "Waiting");
       row.querySelector("[data-role='evidence']").textContent = "";
+      renderRowUsage(row, null, 0);
       renderRowChunks(row, []);
     });
 

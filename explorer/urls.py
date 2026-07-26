@@ -20,4 +20,10 @@ urlpatterns = [
     path("classify/", views.classify, name="classify"),
     path("classify/run/", views.classify_candidate, name="classify_candidate"),
     path("classify/query/", views.query_classifications, name="query_classifications"),
+    path("experiment/", views.experiment, name="experiment"),
+    path(
+        "experiment/run-cell/",
+        views.experiment_run_cell,
+        name="experiment_run_cell",
+    ),
 ]

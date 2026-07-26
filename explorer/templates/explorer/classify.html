@@ -23,6 +23,7 @@
         <a href="{% url 'explorer:index' %}">Chunk lab</a>
         <a href="{% url 'explorer:assignment' %}">Help center lab</a>
         <a href="{% url 'explorer:vectordb' %}">Vector DB lab</a>
+        <a href="{% url 'explorer:experiment' %}">Experiment lab</a>
       </nav>
     </header>
 
@@ -128,7 +129,7 @@
           <div class="model-note">
             <span>Models</span>
             <p><strong>Embeddings</strong> {{ model_name }}</p>
-            <p><strong>Classification</strong> {{ gemini_model }} via LangChain</p>
+            <p><strong>Classification</strong> {{ gemini_model }} via Vertex AI</p>
           </div>
         </aside>
 
@@ -145,6 +146,7 @@
               </button>
             </div>
             <p id="run-status" class="form-status" role="status" aria-live="polite"></p>
+            <div id="run-summary" class="run-summary" hidden></div>
             <div id="candidate-rows" class="candidate-rows">
               {% for candidate_id, candidate in candidates.items %}
                 <article class="candidate-row" data-candidate-id="{{ candidate_id }}">
@@ -153,6 +155,7 @@
                     <span class="candidate-row-status" data-role="status">Waiting</span>
                   </div>
                   <p class="candidate-row-evidence" data-role="evidence"></p>
+                  <p class="candidate-row-usage" data-role="usage" hidden></p>
                   <div class="candidate-row-chunks" data-role="chunks" hidden></div>
                 </article>
               {% endfor %}

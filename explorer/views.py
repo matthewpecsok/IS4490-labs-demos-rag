@@ -8,6 +8,7 @@ from django.views.decorators.http import require_GET, require_POST
 from . import gemini_classifier, vector_store
 from .candidate_data import CANDIDATE_DOCUMENTS, JOB_POSTING_TEXT, JOB_POSTING_TITLE
 from .classification_data import CLASSIFICATION_QUESTIONS
+from .ground_truth_data import GROUND_TRUTH
 from .help_center_data import ASSIGNMENT_QUESTIONS, HELP_CENTER_DOCUMENTS
 from .models import ResumeClassification, question_key_for
 from .resume_data import RESUME_TEXT
@@ -342,6 +343,7 @@ def classify_candidate(request):
 
     stored = None
     if classification["available"]:
+        usage = classification.get("usage") or {}
         stored_key = question_key_for(question_key, question)
         record, _ = ResumeClassification.objects.update_or_create(
             candidate_id=candidate_id,
@@ -355,6 +357,11 @@ def classify_candidate(request):
                 "overlap": overlap,
                 "top_k": top_k,
                 "model_name": classification["model"],
+                "prompt_tokens": usage.get("prompt_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "thinking_tokens": usage.get("thinking_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+                "latency_ms": classification.get("latency_ms", 0),
             },
         )
         stored = {"question_key": record.question_key, "updated_at": record.updated_at.isoformat()}
@@ -404,5 +411,116 @@ def query_classifications(request):
                 }
                 for record in records
             ],
+        }
+    )
+
+
+@require_GET
+def experiment(request):
+    candidates_summary = {
+        candidate_id: {"name": candidate["candidate_name"]}
+        for candidate_id, candidate in CANDIDATE_DOCUMENTS.items()
+    }
+    questions_summary = {
+        key: {"label": item["label"], "question": item["question"]}
+        for key, item in CLASSIFICATION_QUESTIONS.items()
+    }
+    return render(
+        request,
+        "explorer/experiment.html",
+        {
+            "candidates": CANDIDATE_DOCUMENTS,
+            "questions": CLASSIFICATION_QUESTIONS,
+            "candidates_summary": candidates_summary,
+            "questions_summary": questions_summary,
+            "total_calls": len(CANDIDATE_DOCUMENTS) * 2,
+            "gemini_model": gemini_classifier.GEMINI_MODEL,
+            "gemini_configured": gemini_classifier.is_configured(),
+        },
+    )
+
+
+@require_POST
+def experiment_run_cell(request):
+    """Run one (candidate, rubric question) cell for one retrieval config and
+    score it against the stored ground truth. Used by the experiment page to
+    compare two configs; unlike classify_candidate, this never writes to
+    ResumeClassification so it can't clobber the screening lab's results."""
+    try:
+        payload = json.loads(request.body)
+        candidate_id = str(payload.get("candidate_id", "")).strip()
+        question_key = str(payload.get("question_key", "")).strip()
+        chunk_size = int(payload.get("chunk_size", 100))
+        overlap = int(payload.get("overlap", 20))
+        top_k = int(payload.get("top_k", 4))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return JsonResponse({"error": "Experiment parameters are invalid."}, status=400)
+
+    if candidate_id not in CANDIDATE_DOCUMENTS:
+        return JsonResponse({"error": "Choose a known candidate."}, status=400)
+    if question_key not in CLASSIFICATION_QUESTIONS:
+        return JsonResponse(
+            {
+                "error": (
+                    "Choose one of the rubric questions - custom questions have "
+                    "no ground truth to score against."
+                )
+            },
+            status=400,
+        )
+    if not 20 <= chunk_size <= 200:
+        return JsonResponse(
+            {"error": "Chunk size must be between 20 and 200 words."}, status=400
+        )
+    if not 0 <= overlap < chunk_size:
+        return JsonResponse(
+            {"error": "Overlap must be zero or more and smaller than chunk size."},
+            status=400,
+        )
+    if not 1 <= top_k <= 10:
+        return JsonResponse({"error": "Top K must be between 1 and 10."}, status=400)
+
+    question = CLASSIFICATION_QUESTIONS[question_key]["question"]
+    candidate = CANDIDATE_DOCUMENTS[candidate_id]
+
+    try:
+        chunks = search_chunks(
+            query=question,
+            text=candidate["content"],
+            chunk_size=chunk_size,
+            overlap=overlap,
+            top_k=top_k,
+        )
+    except Exception:
+        logger.exception(
+            "Experiment chunk search failed for candidate_id=%r, question_key=%r",
+            candidate_id,
+            question_key,
+        )
+        return JsonResponse(
+            {
+                "error": (
+                    "The embedding model could not be loaded. Check the server "
+                    "connection and try again."
+                )
+            },
+            status=503,
+        )
+
+    classification = gemini_classifier.classify_chunks(
+        candidate["candidate_name"], question, chunks
+    )
+    expected = GROUND_TRUTH[candidate_id][question_key]
+    predicted = classification["answer"] if classification["available"] else None
+    correct = (predicted == expected) if predicted is not None else None
+
+    return JsonResponse(
+        {
+            "candidate_id": candidate_id,
+            "candidate_name": candidate["candidate_name"],
+            "question_key": question_key,
+            "expected": expected,
+            "correct": correct,
+            "classification": classification,
         }
     )

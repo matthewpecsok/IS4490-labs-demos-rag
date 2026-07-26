@@ -1,6 +1,6 @@
 # RAG Teaching Labs
 
-A Django teaching application with four interactive pages:
+A Django teaching application with five interactive pages:
 
 - `/` explores how chunk size, overlap, and Top K affect semantic retrieval over
   a fictional resume.
@@ -13,11 +13,20 @@ A Django teaching application with four interactive pages:
   query that store with a configurable Top K.
 - `/classify/` demonstrates why semantic search alone doesn't scale to a large
   resume corpus: it retrieves the top chunks from **one resume at a time**, asks
-  Gemini (via LangChain) a yes/no qualification question grounded in that
-  evidence, and stores the boolean verdict in a real Django model
-  (`ResumeClassification`, in `db.sqlite3`). A separate "query the database" step
-  then answers "which candidates qualify?" with a plain ORM/SQL filter — no
-  chunking, embeddings, or LLM calls involved.
+  Gemini a yes/no qualification question grounded in that evidence, and stores
+  the boolean verdict in a real Django model (`ResumeClassification`, in
+  `db.sqlite3`). A separate "query the database" step then answers "which
+  candidates qualify?" with a plain ORM/SQL filter — no chunking, embeddings, or
+  LLM calls involved.
+- `/experiment/` is an evaluation-harness lab: pick one rubric question, then
+  it runs the screening pipeline against all three candidates under two
+  different chunk size / overlap / Top K configurations, scores each answer
+  against a hand-labeled ground truth (`explorer/ground_truth_data.py`), and
+  compares accuracy, precision, recall, F1, token usage, and latency between
+  the two configs side by side (6 Gemini calls per comparison). Each call is
+  real and unmocked, using the same retrieval + Gemini pipeline as
+  `/classify/`, but results are never written to `ResumeClassification` so
+  running experiments can't clobber that page's stored results.
 
 The backend uses the Hugging Face
 `sentence-transformers/all-MiniLM-L6-v2` embedding model. The first search
@@ -63,7 +72,8 @@ python manage.py runserver
 ```
 
 Open <http://127.0.0.1:8000>, <http://127.0.0.1:8000/assignment/>,
-<http://127.0.0.1:8000/vectordb/>, or <http://127.0.0.1:8000/classify/>.
+<http://127.0.0.1:8000/vectordb/>, <http://127.0.0.1:8000/classify/>, or
+<http://127.0.0.1:8000/experiment/>.
 
 ## Test
 

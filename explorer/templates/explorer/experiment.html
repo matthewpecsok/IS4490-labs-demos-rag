@@ -1,0 +1,253 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Compare two retrieval configurations head-to-head on accuracy, precision, recall, token usage, and latency.">
+  <title>Retrieval Experiment Lab</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{% static 'explorer/experiment.css' %}">
+</head>
+<body>
+  <div class="app-shell">
+    {% csrf_token %}
+    <header class="topbar">
+      <a class="brand" href="{% url 'explorer:experiment' %}">
+        <span class="brand-mark">E</span>
+        <span>Experiment <small>A/B evaluation harness</small></span>
+      </a>
+      <nav>
+        <a href="{% url 'explorer:index' %}">Chunk lab</a>
+        <a href="{% url 'explorer:assignment' %}">Help center lab</a>
+        <a href="{% url 'explorer:vectordb' %}">Vector DB lab</a>
+        <a href="{% url 'explorer:classify' %}">Screening lab</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="intro">
+        <div>
+          <span class="kicker">RAG lab · evaluation harness</span>
+          <h1>Compare two<br>retrieval configs<br><em>head to head</em>.</h1>
+        </div>
+        <div class="intro-copy">
+          <p>
+            This is what a testing platform looks like: run the same
+            screening pipeline against two different chunk size / overlap /
+            Top K configurations, score every answer against a hand-labeled
+            ground truth, and compare accuracy, precision, recall, token
+            usage, and latency side by side.
+          </p>
+          <div class="pipeline">
+            <span>Configure A + B</span><i></i><span>Retrieve</span><i></i>
+            <span>Classify</span><i></i><span>Score vs. ground truth</span><i></i>
+            <span>Compare</span>
+          </div>
+        </div>
+      </section>
+
+      {% if not gemini_configured %}
+        <div class="gemini-banner">
+          <strong>Gemini isn't configured yet.</strong>
+          Set <code>GOOGLE_API_KEY</code> (or <code>GEMINI_API_KEY</code>) in your
+          environment and restart the server to enable live classification.
+        </div>
+      {% endif %}
+
+      <div class="cost-banner">
+        <strong>This runs real Gemini calls.</strong>
+        {{ candidates|length }} candidates × 2 configs = {{ total_calls }}
+        classification calls per comparison, and counts against your API quota.
+      </div>
+
+      <section class="question-section">
+        <div class="panel-heading">
+          <div>
+            <span class="panel-label">Question</span>
+            <h2>Choose one question to test</h2>
+          </div>
+        </div>
+        <p class="section-note">
+          Only one rubric question runs per comparison, against all
+          {{ candidates|length }} resumes - custom questions have no ground
+          truth, so they aren't available here.
+        </p>
+        <div class="question-options">
+          {% for key, item in questions.items %}
+            <label class="question-option">
+              <input type="radio" name="question_key" value="{{ key }}" {% if forloop.first %}checked{% endif %}>
+              <span class="radio-ui"></span>
+              <span class="question-copy">
+                <strong>{{ item.label }}</strong>
+                <span>{{ item.question }}</span>
+              </span>
+            </label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <div class="config-grid">
+        <section class="config-card" data-config="a">
+          <div class="config-card-heading">
+            <span class="config-badge config-badge-a">A</span>
+            <h2>Configuration A</h2>
+          </div>
+          <p class="config-card-note">Small chunks, tight Top K — cheap and fast.</p>
+
+          <label class="range-control">
+            <span class="range-heading">
+              <span>Chunk size</span>
+              <output id="chunk-size-a-output">40 words</output>
+            </span>
+            <input id="chunk-size-a" type="range" min="20" max="200" step="10" value="40">
+            <span class="range-ends"><span>20</span><span>200</span></span>
+          </label>
+
+          <label class="range-control">
+            <span class="range-heading">
+              <span>Overlap</span>
+              <output id="overlap-a-output">0 words</output>
+            </span>
+            <input id="overlap-a" type="range" min="0" max="70" step="5" value="0">
+            <span class="range-ends"><span>0</span><span id="overlap-a-max">35</span></span>
+          </label>
+
+          <label class="range-control">
+            <span class="range-heading">
+              <span>Top K per resume</span>
+              <output id="top-k-a-output">2 chunks</output>
+            </span>
+            <input id="top-k-a" type="range" min="1" max="10" step="1" value="2">
+            <span class="range-ends"><span>1</span><span>10</span></span>
+          </label>
+        </section>
+
+        <section class="config-card" data-config="b">
+          <div class="config-card-heading">
+            <span class="config-badge config-badge-b">B</span>
+            <h2>Configuration B</h2>
+          </div>
+          <p class="config-card-note">Larger chunks, wider Top K — thorough and expensive.</p>
+
+          <label class="range-control">
+            <span class="range-heading">
+              <span>Chunk size</span>
+              <output id="chunk-size-b-output">160 words</output>
+            </span>
+            <input id="chunk-size-b" type="range" min="20" max="200" step="10" value="160">
+            <span class="range-ends"><span>20</span><span>200</span></span>
+          </label>
+
+          <label class="range-control">
+            <span class="range-heading">
+              <span>Overlap</span>
+              <output id="overlap-b-output">40 words</output>
+            </span>
+            <input id="overlap-b" type="range" min="0" max="70" step="5" value="40">
+            <span class="range-ends"><span>0</span><span id="overlap-b-max">70</span></span>
+          </label>
+
+          <label class="range-control">
+            <span class="range-heading">
+              <span>Top K per resume</span>
+              <output id="top-k-b-output">6 chunks</output>
+            </span>
+            <input id="top-k-b" type="range" min="1" max="10" step="1" value="6">
+            <span class="range-ends"><span>1</span><span>10</span></span>
+          </label>
+        </section>
+      </div>
+
+      <section class="run-section">
+        <div class="panel-heading">
+          <div>
+            <span class="panel-label">Run</span>
+            <h2>Run the comparison</h2>
+          </div>
+          <button id="run-button" class="build-button" type="button">
+            <span>Run comparison</span>
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M5 12h14m-5-5 5 5-5 5"/></svg>
+          </button>
+        </div>
+        <div class="progress-track"><i id="progress-fill"></i></div>
+        <p id="run-status" class="form-status" role="status" aria-live="polite"></p>
+      </section>
+
+      <section id="results-section" class="results-section" hidden>
+        <p id="results-question" class="results-question"></p>
+        <div class="metrics-grid">
+          <div class="metrics-card" data-config="a">
+            <div class="metrics-card-heading">
+              <span class="config-badge config-badge-a">A</span>
+              <h3>Configuration A</h3>
+            </div>
+            <p class="metrics-config-line" data-role="config-line"></p>
+            <div class="metrics-scores" data-role="scores"></div>
+            <div class="metrics-footer" data-role="footer"></div>
+          </div>
+          <div class="metrics-card" data-config="b">
+            <div class="metrics-card-heading">
+              <span class="config-badge config-badge-b">B</span>
+              <h3>Configuration B</h3>
+            </div>
+            <p class="metrics-config-line" data-role="config-line"></p>
+            <div class="metrics-scores" data-role="scores"></div>
+            <div class="metrics-footer" data-role="footer"></div>
+          </div>
+        </div>
+
+        <h3 class="metrics-section-heading">Token usage &amp; latency</h3>
+        <div class="metrics-grid">
+          <div class="metrics-card metrics-card-cost" data-cost-config="a">
+            <div class="metrics-card-heading">
+              <span class="config-badge config-badge-a">A</span>
+              <h3>Configuration A</h3>
+            </div>
+            <div class="metrics-scores metrics-scores-cost" data-role="cost-scores"></div>
+          </div>
+          <div class="metrics-card metrics-card-cost" data-cost-config="b">
+            <div class="metrics-card-heading">
+              <span class="config-badge config-badge-b">B</span>
+              <h3>Configuration B</h3>
+            </div>
+            <div class="metrics-scores metrics-scores-cost" data-role="cost-scores"></div>
+          </div>
+        </div>
+
+        <div id="delta-banner" class="delta-banner" hidden></div>
+
+        <div class="results-table-wrap">
+          <table class="results-table">
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>Expected</th>
+                <th>Config A</th>
+                <th>Config B</th>
+              </tr>
+            </thead>
+            <tbody id="results-table-body"></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>Retrieval Experiment Lab</span>
+      <p>Ground truth is hand-labeled from the three fictional resumes against each rubric question - see explorer/ground_truth_data.py.</p>
+    </footer>
+  </div>
+
+  {{ candidates_summary|json_script:"candidates-data" }}
+  {{ questions_summary|json_script:"questions-data" }}
+  <script>
+    window.experimentLab = {
+      runCellUrl: "{% url 'explorer:experiment_run_cell' %}"
+    };
+  </script>
+  <script src="{% static 'explorer/experiment.js' %}"></script>
+</body>
+</html>

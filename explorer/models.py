@@ -22,6 +22,11 @@ class ResumeClassification(models.Model):
     overlap = models.PositiveIntegerField()
     top_k = models.PositiveIntegerField()
     model_name = models.CharField(max_length=100)
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    output_tokens = models.PositiveIntegerField(default=0)
+    thinking_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    latency_ms = models.PositiveIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
