@@ -34,15 +34,21 @@ ollama serve
 
 Override the defaults with `OLLAMA_URL` and `OLLAMA_MODEL`.
 
-The classify page sends retrieved chunks to Gemini through
-[langchain-google-genai](https://pypi.org/project/langchain-google-genai/). Set
-an API key before starting the server:
+The classify page sends retrieved chunks to Gemini via a direct REST call to
+Vertex AI's `generateContent` endpoint (`aiplatform.googleapis.com`), using the
+API key as an `x-goog-api-key` header. Set an API key before starting the
+server:
 
 ```bash
 export GOOGLE_API_KEY=your-key-here   # or GEMINI_API_KEY
 ```
 
-Override the model with `GEMINI_MODEL` (defaults to `gemini-2.0-flash`). Without
+Note: some Google accounts now issue `AQ.`-prefixed API keys instead of the
+older `AIza...` format. `AQ.` keys are rejected by the classic Gemini
+Developer API (`generativelanguage.googleapis.com`) but work against the
+Vertex `aiplatform.googleapis.com` endpoint used here.
+
+Override the model with `GEMINI_MODEL` (defaults to `gemini-3.5-flash`). Without
 a key, the page still runs chunking, retrieval, and storage, and clearly reports
 classification as unavailable.
 
@@ -63,4 +69,15 @@ Open <http://127.0.0.1:8000>, <http://127.0.0.1:8000/assignment/>,
 
 ```bash
 python manage.py test
+# or
+pytest
 ```
+
+## Logs
+
+The `explorer` app logs to the console (see `LOGGING` in `rag_demo/settings.py`).
+When a request fails — the embedding model can't load, or a Gemini call raises —
+the view returns a generic error to the browser but logs the full exception
+with `logger.exception(...)`, so check the `runserver` console output for the
+real cause (e.g. a missing/invalid `GEMINI_API_KEY`) instead of guessing from
+the user-facing message alone.

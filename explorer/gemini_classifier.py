@@ -1,8 +1,28 @@
+import logging
 import os
 
+import requests
 from pydantic import BaseModel, Field
 
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
+logger = logging.getLogger(__name__)
+
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
+
+# Vertex AI's "API key" surface: unlike the generativelanguage.googleapis.com
+# Gemini Developer API, this endpoint accepts newer AQ.-prefixed API keys via
+# the x-goog-api-key header and needs no GCP project/location in the URL.
+GEMINI_API_URL = (
+    "https://aiplatform.googleapis.com/v1/publishers/google/models/{model}:generateContent"
+)
+
+RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "answer": {"type": "BOOLEAN"},
+        "evidence": {"type": "STRING"},
+    },
+    "required": ["answer", "evidence"],
+}
 
 
 class ResumeQualification(BaseModel):
@@ -26,6 +46,10 @@ def is_configured():
     return bool(os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"))
 
 
+def _api_key():
+    return os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY")
+
+
 def _build_prompt(candidate_name, question, chunks):
     context = "\n\n".join(
         f"[chunk {chunk['rank']} | similarity {chunk['score']}]\n{chunk['text']}"
@@ -42,7 +66,7 @@ def _build_prompt(candidate_name, question, chunks):
 
 
 def classify_chunks(candidate_name, question, chunks, timeout=60):
-    """Ask Gemini (via LangChain) to answer a boolean question from retrieved chunks."""
+    """Ask Gemini (via Vertex AI's generateContent REST endpoint) a yes/no question."""
     if not chunks:
         return {
             "available": False,
@@ -52,21 +76,52 @@ def classify_chunks(candidate_name, question, chunks, timeout=60):
             "message": "No resume chunks were retrieved for this question.",
         }
 
+    api_key = _api_key()
     try:
-        from langchain_google_genai import ChatGoogleGenerativeAI
+        if not api_key:
+            raise RuntimeError("No API key in GOOGLE_API_KEY or GEMINI_API_KEY.")
 
-        llm = ChatGoogleGenerativeAI(model=GEMINI_MODEL, temperature=0, timeout=timeout)
-        classifier = llm.with_structured_output(ResumeQualification)
-        result = classifier.invoke(_build_prompt(candidate_name, question, chunks))
+        response = requests.post(
+            GEMINI_API_URL.format(model=GEMINI_MODEL),
+            headers={
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+            },
+            json={
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {"text": _build_prompt(candidate_name, question, chunks)}
+                        ],
+                    }
+                ],
+                "generationConfig": {
+                    "temperature": 0,
+                    "responseMimeType": "application/json",
+                    "responseSchema": RESPONSE_SCHEMA,
+                },
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        candidates = response.json()["candidates"]
+        text = candidates[0]["content"]["parts"][0]["text"]
+        result = ResumeQualification.model_validate_json(text)
     except Exception as exc:
+        logger.exception(
+            "Gemini classification failed (is_configured=%s, model=%s)",
+            is_configured(),
+            GEMINI_MODEL,
+        )
         return {
             "available": False,
             "answer": None,
             "evidence": "",
             "model": GEMINI_MODEL,
             "message": (
-                "Gemini is not available. Set GOOGLE_API_KEY (or GEMINI_API_KEY) "
-                "and make sure langchain-google-genai is installed."
+                "Gemini is not available. Set GOOGLE_API_KEY (or GEMINI_API_KEY) to "
+                "a key valid for the Vertex AI generateContent endpoint."
             ),
             "detail": str(exc),
         }

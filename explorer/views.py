@@ -1,4 +1,5 @@
 import json
+import logging
 
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -17,6 +18,8 @@ from .services import (
     retrieve_help_center,
     search_chunks,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @require_GET
@@ -66,6 +69,7 @@ def search(request):
             top_k=top_k,
         )
     except Exception:
+        logger.exception("Chunk search failed for query=%r", query)
         return JsonResponse(
             {
                 "error": (
@@ -136,6 +140,7 @@ def evaluate_assignment(request):
             top_k=top_k,
         )
     except Exception:
+        logger.exception("Help center retrieval failed for question_key=%r", question_key)
         return JsonResponse(
             {
                 "error": (
@@ -200,6 +205,7 @@ def build_vector_index(request):
     try:
         stats = vector_store.build_index(CANDIDATE_DOCUMENTS, chunk_size, overlap)
     except Exception:
+        logger.exception("Vector store build failed (chunk_size=%s, overlap=%s)", chunk_size, overlap)
         return JsonResponse(
             {
                 "error": (
@@ -232,6 +238,7 @@ def vectordb_search(request):
     except LookupError as exc:
         return JsonResponse({"error": str(exc)}, status=409)
     except Exception:
+        logger.exception("Vector store search failed for query=%r", query)
         return JsonResponse(
             {
                 "error": (
@@ -316,6 +323,9 @@ def classify_candidate(request):
             top_k=top_k,
         )
     except Exception:
+        logger.exception(
+            "Chunk search failed for candidate_id=%r, question=%r", candidate_id, question
+        )
         return JsonResponse(
             {
                 "error": (
